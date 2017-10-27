@@ -14,12 +14,17 @@ import org.json.JSONObject;
 import com.google.common.collect.HashMultimap;
 import com.opencsv.CSVReader;
 
+import datastructure.IndexInterval;
+import datastructure.IntervalTree;
+
 /**
  * @since 2017/10/26
  * @author Haoran Sun
  * Classifier for news
  */
 public class Classifier {
+  static final int GEO_MAX_LENGTH = 15;
+  
   private HashMultimap<String, GeoInfo> dict;
   private LinkedList<String> provinces;
   private LinkedList<String> cities;
@@ -98,9 +103,71 @@ public class Classifier {
   public void readNews(String filename) {
     try (CSVReader reader = new CSVReader(new InputStreamReader(new
         FileInputStream(filename), StandardCharsets.UTF_8));) {
+      String[] line;
+      while((line = reader.readNext()) != null) {
+        String id = line[0];
+        String newspaper = line[1];
+        String text = line[line.length - 1].replaceAll("<[^>]+>", "").replace
+            (" ", "");
+      }
       
     } catch (IOException e) {
       e.printStackTrace();
+    }
+  }
+  
+  private void ngramMatch(String[] content) {
+    int n = GEO_MAX_LENGTH;
+    int wordLength = n;
+
+    /* Iterate through all sentences */
+    for (int i = 0; i < content.length; i++) {
+      IntervalTree<IndexInterval> ist = new IntervalTree<>();
+      int endIndex = 0;
+      wordLength = n;
+
+      /* First round word matching using the word length n */
+      for (int j = 0; j < content[i].length();) {
+        endIndex = j + wordLength - 1;
+        if (endIndex >= content[i].length())
+          break;
+
+        /* Word matching */
+        if (this.dict.containsKey(content[i].substring(j, endIndex + 1))) {
+          /* Mark interval */
+          ist.insert(new IndexInterval(j, endIndex));
+          j = endIndex + 1; // Get next index
+        } else {
+          j++;
+        }
+      }
+      wordLength--; // Ready to match word with shorter length
+
+      int nextPos;
+      for (; wordLength > 0; wordLength--) { // Try matching all words until
+                                             // the length 1
+        /* Start from the first available position */
+        for (int j = ist.nextAvailable(new IndexInterval(0, wordLength - 1));
+            j < content[i].length();) {
+          endIndex = j + wordLength - 1;
+          if (endIndex >= content[i].length())
+            break;
+
+          nextPos = ist.nextAvailable(new IndexInterval(j, endIndex)); // Check
+                                                                       // overlap
+          if (j == nextPos) { // No overlap found
+            /* Word matching */
+            if (this.dict.containsKey(content[i].substring(j, endIndex + 1))) {
+              /* Mark interval */
+              ist.insert(new IndexInterval(j, endIndex));
+              j = endIndex + 1; // Get next index
+            } else {
+              j++;
+            }
+          } else
+            j = nextPos; // Try next available position
+        }
+      }
     }
   }
   
