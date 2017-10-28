@@ -5,8 +5,11 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.util.Iterator;
 import java.util.LinkedList;
+import java.util.ListIterator;
 import java.util.Scanner;
+import java.util.Set;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -24,24 +27,22 @@ import datastructure.IntervalTree;
  */
 public class Classifier {
   static final int GEO_MAX_LENGTH = 15;
+  static final String[] IGNORE_LOC = {"市辖区", "城区", "矿区", "郊区", "省直辖县级行政区划"};
+  static final String[] REGIONS = {"省", "自治区", "市", "区", "县", "自治县", "自治州"};
+  static final int CITY = 2;
+  static final int DIST_COUNTY = 3;
   
   private HashMultimap<String, GeoInfo> dict;
   private LinkedList<String> provinces;
   private LinkedList<String> cities;
   
   private class GeoInfo {
-    private String location;
     private String code;
     private GeoInfo parent;
     
-    public GeoInfo(String location, String code, GeoInfo parent) {
-      this.location = location;
+    public GeoInfo(String code, GeoInfo parent) {
       this.code = code;
       this.parent = parent;
-    }
-    
-    public String getLocation() {
-      return this.location;
     }
     
     public String getCode() {
@@ -52,10 +53,29 @@ public class Classifier {
       return this.parent;
     }
     
+    public boolean isBelongTo(String code) {
+    	GeoInfo parent = this.parent;
+    	while(parent != null) {
+    		if(parent.getCode().equals(code))
+    			return true;
+    		parent = parent.parent;
+    	}
+    	return false;
+    }
+    
+    public int getLevel() {
+    	int level = 1;
+    	GeoInfo parent = this.parent;
+    	while(parent != null) {
+    		parent = parent.parent;
+    		level++;
+    	}
+    	return level;
+    }
+    
     @Override
     public String toString() {
-      return "{\"Location:\"" + this.location + ", \"Code:\"" + this.code + 
-          "}";
+      return "\"Code:\"" + this.code;
     }
   }
   
@@ -72,26 +92,25 @@ public class Classifier {
       for(int i = 0; i < jsonDict.length(); i++) { // Level 1
         JSONObject level1 = jsonDict.getJSONObject(i);
         GeoInfo level1Unit = new
-            GeoInfo(level1.getString("name"), level1.getString("code"), null);
+            GeoInfo(level1.getString("code"), null);
         this.dict.put(level1.getString("name"), level1Unit);
         
         JSONArray level2Arr = level1.getJSONArray("childs");
         for(int j = 0; j < level2Arr.length(); j++) {
           JSONObject level2 = level2Arr.getJSONObject(j);
           GeoInfo parent = null;
-          if(level2.getString("name").equals("市辖区"))
+          if(this.exclude(level2.getString("name")))
             parent = level1Unit;
           else {
-            parent = new GeoInfo(level2.getString("name"),
-                level2.getString("code"), level1Unit);
+            parent = new GeoInfo(level2.getString("code"), level1Unit);
             this.dict.put(level2.getString("name"), parent);
           }
           JSONArray level3Arr = level2.getJSONArray("childs");
           for(int k = 0; k < level3Arr.length(); k++) {
             JSONObject level3 = level3Arr.getJSONObject(k);
+            if(this.exclude(level3.getString("name"))) continue;
             this.dict.put(level3.getString("name"), new
-                GeoInfo(level3.getString("name"), level3.getString("code"),
-                    parent));
+                GeoInfo(level3.getString("code"), parent));
           }
         }
       }
@@ -116,7 +135,55 @@ public class Classifier {
     }
   }
   
+  private boolean exclude(String word) {
+	  for(String loc: IGNORE_LOC)
+		  if(loc.equals(word)) return true;
+	  return false;
+  }
+  
+  private String lookup(String term, String newsOrigin) {
+	  if(this.dict.containsKey(term))
+		  return this.directLookup(term, newsOrigin);
+	  else
+		  return this.prefixLookup(term, newsOrigin);
+  }
+  
+  private String directLookup(String term, String newsOrigin) {
+	  Set<GeoInfo> result = this.dict.get(term);
+	  Iterator<GeoInfo> it = result.iterator();
+	  if(result.size() == 1) {
+		  GeoInfo loc = it.next();
+		  if(loc.getLevel() == 1) this.provinces.add(loc.getCode());
+		  else this.cities.add(loc.getCode());
+		  return loc.toString();
+	  } else {
+		  while(it.hasNext()) {
+			  GeoInfo loc = it.next();
+			  if(loc.isBelongTo(newsOrigin)) return loc.toString();
+			  ListIterator<String> iter;
+			  if(loc.getLevel() == CITY)
+				  iter = this.provinces.listIterator();
+			  else
+				  iter = this.cities.listIterator();
+			  while(iter.hasNext()) {
+				  String code = iter.next();
+				  if(loc.isBelongTo(code)) return loc.toString();
+			  }
+		  }
+	  }
+	  return null;
+  }
+  
+  private String prefixLookup(String term, String newsOrigin) {
+	  for(String postfix: REGIONS) {
+		  String code = this.directLookup(term + postfix, newsOrigin);
+		  if(code != null) return code;
+	  }
+	  return null;
+  }
+  
   private void ngramMatch(String[] content) {
+	  String newsOrigin = null; //TODO: add method call
     int n = GEO_MAX_LENGTH;
     int wordLength = n;
 
@@ -133,9 +200,12 @@ public class Classifier {
           break;
 
         /* Word matching */
-        if (this.dict.containsKey(content[i].substring(j, endIndex + 1))) {
+        String match = null;
+        if (this.lookup(content[i].substring(j, endIndex + 1), newsOrigin) != 
+        		null) {
           /* Mark interval */
           ist.insert(new IndexInterval(j, endIndex));
+          System.out.println(content[i].substring(j, endIndex + 1) + match);
           j = endIndex + 1; // Get next index
         } else {
           j++;
@@ -157,9 +227,12 @@ public class Classifier {
                                                                        // overlap
           if (j == nextPos) { // No overlap found
             /* Word matching */
-            if (this.dict.containsKey(content[i].substring(j, endIndex + 1))) {
+        	  String match = null;
+            if (this.lookup(content[i].substring(j, endIndex + 1), newsOrigin) != 
+            		null) {
               /* Mark interval */
               ist.insert(new IndexInterval(j, endIndex));
+              System.out.println(content[i].substring(j, endIndex + 1) + match);
               j = endIndex + 1; // Get next index
             } else {
               j++;
@@ -174,7 +247,6 @@ public class Classifier {
   public static void main(String[] args) {
     Classifier csf = new Classifier();
     csf.loadDict("pca-code.json");
-    System.out.println("dict fin");
   }
   
 }
