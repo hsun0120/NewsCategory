@@ -1,16 +1,18 @@
 package classifier;
 
+import java.io.BufferedWriter;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Iterator;
-import java.util.LinkedList;
-import java.util.ListIterator;
 import java.util.Scanner;
 import java.util.Set;
+import java.util.TreeSet;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -35,11 +37,12 @@ public class Classifier {
 			"回族自治区", "维吾尔自治区", "自治县", "自治州"};
 	static final int CITY = 2;
 	static final int DIST_COUNTY = 3;
+	static final int LENGTH_CITY_CODE = 4;
 
 	private HashMultimap<String, GeoInfo> dict;
 	private HashMap<String, String> newspapers;
-	private LinkedList<String> provinces;
-	private LinkedList<String> cities;
+	private TreeSet<String> provinces;
+	private TreeSet<String> cities;
 
 	private class GeoInfo {
 		private String code;
@@ -89,8 +92,6 @@ public class Classifier {
 	public Classifier() {
 		this.dict = HashMultimap.create();
 		this.newspapers = new HashMap<>();
-		this.provinces = new LinkedList<>();
-		this.cities = new LinkedList<>();
 	}
 
 	public void loadNewspaperList(String list) {
@@ -140,12 +141,14 @@ public class Classifier {
 		}
 	}
 
-	public void readNews(String filename) {
+	public void readNews(String filename, String output) {
 		try (CSVReader reader = new CSVReader(new InputStreamReader(new
 				FileInputStream(filename), StandardCharsets.UTF_8));) {
 			String[] line;
+			BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(new
+					FileOutputStream(output), StandardCharsets.UTF_8));
 			while((line = reader.readNext()) != null) {
-				//String id = line[0];
+				String id = line[0];
 				String newspaper = line[1];
 				String text = line[line.length - 1].replaceAll("<[^>]+>", "").replace
 						(" ", "");
@@ -153,7 +156,12 @@ public class Classifier {
 				/* Newspaper is from Hongkong or Macau */
 				if(newsOrigin.equals("81") || newsOrigin.equals("82"))
 					text = HanLP.convertToSimplifiedChinese(text);
-				this.ngramMatch(text.split(DELI), newsOrigin);
+				this.provinces = new TreeSet<>();
+				this.cities = new TreeSet<>();
+				
+				writer.write(id + " ");
+				this.ngramMatch(text.split(DELI), newsOrigin, writer);
+				writer.write("\n");
 			}
 
 		} catch (IOException e) {
@@ -181,19 +189,19 @@ public class Classifier {
 			GeoInfo loc = it.next();
 			if(loc.getLevel() == 1) this.provinces.add(loc.getCode());
 			else this.cities.add(loc.getCode());
-			return loc.toString();
+			return loc.code;
 		} else {
 			while(it.hasNext()) {
 				GeoInfo loc = it.next();
-				if(loc.isBelongTo(newsOrigin)) return loc.toString();
-				ListIterator<String> iter;
+				if(loc.isBelongTo(newsOrigin)) return loc.code;
+				Iterator<String> iter;
 				if(loc.getLevel() == CITY)
-					iter = this.provinces.listIterator();
+					iter = this.provinces.iterator();
 				else
-					iter = this.cities.listIterator();
+					iter = this.cities.iterator();
 				while(iter.hasNext()) {
 					String code = iter.next();
-					if(loc.isBelongTo(code)) return loc.toString();
+					if(loc.isBelongTo(code)) return loc.code;
 				}
 			}
 		}
@@ -201,14 +209,28 @@ public class Classifier {
 	}
 
 	private String prefixLookup(String term, String newsOrigin) {
-		for(String postfix: REGIONS) {
-			String code = this.directLookup(term + postfix, newsOrigin);
-			if(code != null) return code;
+		String ret = null;
+		int count = 0;
+		for(int i = 0; i < REGIONS.length; i++) {
+			String code = this.directLookup(term + REGIONS[i], newsOrigin);
+			if(code != null && ret == null && count == 0) {
+				ret = code;
+				count++;
+			}
+			if(i > CITY && code != null && code.length() > 2 &&
+					!this.provinces.contains(code.substring(0, 2)) &&
+					!this.cities.contains(code.substring(0, 4)))
+				ret = null;
+			if(i <= CITY && code != null && code.length() > LENGTH_CITY_CODE)
+				ret = null;
+			if(code != null && code.startsWith(newsOrigin))
+				ret = code;
 		}
-		return null;
+		return ret;
 	}
 
-	private void ngramMatch(String[] content, String newsOrigin) {
+	private void ngramMatch(String[] content, String newsOrigin, BufferedWriter
+			writer) {
 		int n = GEO_MAX_LENGTH;
 		int wordLength = n;
 
@@ -226,11 +248,16 @@ public class Classifier {
 
 				/* Word matching */
 				String match = null;
-				if (this.lookup(content[i].substring(j, endIndex + 1), newsOrigin) != 
-						null) {
+				if ((match = this.lookup(content[i].substring(j, endIndex + 1),
+						newsOrigin)) != null) {
 					/* Mark interval */
 					ist.insert(new IndexInterval(j, endIndex));
-					System.out.println(content[i].substring(j, endIndex + 1) + match);
+					try {
+						writer.write(content[i].substring(j, endIndex + 1) + 
+								",code:" + match + " ");
+					} catch (IOException e) {
+						e.printStackTrace();
+					}
 					j = endIndex + 1; // Get next index
 				} else {
 					j++;
@@ -239,8 +266,8 @@ public class Classifier {
 			wordLength--; // Ready to match word with shorter length
 
 			int nextPos;
-			for (; wordLength > 0; wordLength--) { // Try matching all words until
-				// the length 1
+			/* Try matching until the length 2 */
+			for (; wordLength > 1; wordLength--) {
 				/* Start from the first available position */
 				for (int j = ist.nextAvailable(new IndexInterval(0, wordLength - 1));
 						j < content[i].length();) {
@@ -253,11 +280,16 @@ public class Classifier {
 					if (j == nextPos) { // No overlap found
 						/* Word matching */
 						String match = null;
-						if (this.lookup(content[i].substring(j, endIndex + 1), newsOrigin) != 
-								null) {
+						if ((match = this.lookup(content[i].substring(j,
+								endIndex + 1), newsOrigin)) != null) {
 							/* Mark interval */
 							ist.insert(new IndexInterval(j, endIndex));
-							System.out.println(content[i].substring(j, endIndex + 1) + match);
+							try {
+								writer.write(content[i].substring(j, endIndex +
+										1) + ",code:" + match + " ");
+							} catch (IOException e) {
+								e.printStackTrace();
+							}
 							j = endIndex + 1; // Get next index
 						} else {
 							j++;
@@ -271,7 +303,9 @@ public class Classifier {
 
 	public static void main(String[] args) {
 		Classifier csf = new Classifier();
+		csf.loadNewspaperList("newspaperList.txt");
 		csf.loadDict("pca-code.json");
+		csf.readNews("2017-01.csv", "output.txt");
 	}
 
 }
