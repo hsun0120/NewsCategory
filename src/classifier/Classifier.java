@@ -36,10 +36,12 @@ public class Classifier {
 	static final String[] REGIONS = {"省", "自治区", "市", "区", "县", "壮族自治区",
 			"回族自治区", "维吾尔自治区", "自治县", "自治州"};
 	static final int CITY = 2;
+	static final int CNAME = 2;
 	static final int DIST_COUNTY = 3;
 	static final int LENGTH_CITY_CODE = 4;
 
 	private HashMultimap<String, GeoInfo> dict;
+	private HashMap<String, String> bio;
 	private HashMap<String, String> newspapers;
 	private TreeSet<String> provinces;
 	private TreeSet<String> cities;
@@ -91,6 +93,7 @@ public class Classifier {
 
 	public Classifier() {
 		this.dict = HashMultimap.create();
+		this.bio = new HashMap<>();
 		this.newspapers = new HashMap<>();
 	}
 
@@ -107,7 +110,7 @@ public class Classifier {
 		}
 	}
 
-	public void loadDict(String dictName) {
+	public void loadLocDict(String dictName) {
 		try(Scanner sc = new Scanner(new InputStreamReader(new
 				FileInputStream(dictName), StandardCharsets.UTF_8))) {
 			JSONArray jsonDict = new JSONArray(sc.nextLine());
@@ -137,6 +140,20 @@ public class Classifier {
 				}
 			}
 		} catch (FileNotFoundException e) {
+			e.printStackTrace();
+		}
+	}
+	
+	public void loadBio(String BioDict) {
+		try (CSVReader reader = new CSVReader(new InputStreamReader(new
+				FileInputStream(BioDict), StandardCharsets.UTF_8));) {
+			String[] line;
+			while((line = reader.readNext()) != null) {
+				this.bio.put(line[CNAME], line[0]);
+			}
+		} catch (FileNotFoundException e) {
+			e.printStackTrace();
+		} catch (IOException e) {
 			e.printStackTrace();
 		}
 	}
@@ -259,7 +276,19 @@ public class Classifier {
 						e.printStackTrace();
 					}
 					j = endIndex + 1; // Get next index
-				} else {
+				} else if ((match = this.bio.get(content[i].substring(j,
+						endIndex + 1))) != null) {
+					/* Mark interval */
+					ist.insert(new IndexInterval(j, endIndex));
+					try {
+						writer.write(content[i].substring(j, endIndex + 1) + 
+								",cid:" + match + " ");
+					} catch (IOException e) {
+						e.printStackTrace();
+					}
+					j = endIndex + 1; // Get next index
+				}
+				else {
 					j++;
 				}
 			}
@@ -291,6 +320,17 @@ public class Classifier {
 								e.printStackTrace();
 							}
 							j = endIndex + 1; // Get next index
+						} else if ((match = this.bio.get(content[i].substring(j,
+								endIndex + 1))) != null) {
+							/* Mark interval */
+							ist.insert(new IndexInterval(j, endIndex));
+							try {
+								writer.write(content[i].substring(j, endIndex + 1) + 
+										",cid:" + match + " ");
+							} catch (IOException e) {
+								e.printStackTrace();
+							}
+							j = endIndex + 1; // Get next index
 						} else {
 							j++;
 						}
@@ -304,7 +344,8 @@ public class Classifier {
 	public static void main(String[] args) {
 		Classifier csf = new Classifier();
 		csf.loadNewspaperList("newspaperList.txt");
-		csf.loadDict("pca-code.json");
+		csf.loadLocDict("pca-code.json");
+		csf.loadBio("BiographyDictionary.csv");
 		csf.readNews("2017-01.csv", "output.txt");
 	}
 
